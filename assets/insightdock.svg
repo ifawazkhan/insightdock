@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
+  <title id="title">InsightDock</title>
+  <defs>
+    <linearGradient id="dock" x1="9" y1="6" x2="55" y2="58" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6366F1"/>
+      <stop offset="1" stop-color="#4338CA"/>
+    </linearGradient>
+  </defs>
+  <rect x="3" y="3" width="58" height="58" rx="18" fill="url(#dock)"/>
+  <path d="M17 21.5c0-3 6.7-5.5 15-5.5s15 2.5 15 5.5S40.3 27 32 27s-15-2.5-15-5.5Z" fill="none" stroke="#fff" stroke-width="3"/>
+  <path d="M17 21.5v20C17 44.5 23.7 47 32 47s15-2.5 15-5.5v-20M17 31.5C17 34.5 23.7 37 32 37s15-2.5 15-5.5" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/>
+  <path d="m24 41 5-6 5 3 8-10" fill="none" stroke="#C7D2FE" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="42" cy="28" r="2.2" fill="#C7D2FE"/>
+</svg>

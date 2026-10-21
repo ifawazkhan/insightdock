@@ -1,0 +1,22 @@
+# Dataset generation
+pandas>=2.2
+openpyxl>=3.1
+Faker>=30.0
+
+# MySQL loading
+SQLAlchemy>=2.0
+PyMySQL>=1.1
+python-dotenv>=1.0
+
+# MCP server exposing the database to Copilot
+mysql-mcp-server>=0.4.4
+
+# Local employee chatbot
+streamlit>=1.65,<2
+openai>=1.68,<3
+sqlglot>=28,<29
+pytest>=8,<10
+
+# In-memory business report PDFs and static chart rendering
+reportlab>=4.4,<5
+vl-convert-python>=1.8,<2

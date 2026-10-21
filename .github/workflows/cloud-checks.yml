@@ -1,0 +1,88 @@
+name: Cloud pilot checks (no deployment)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      CHATBOT_RUN_INTEGRATION: "0"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: requirements-cloud.txt
+      - name: Install runtime and separate test dependencies
+        run: |
+          python -m pip install -r requirements-cloud.txt pytest==9.1.1 Faker==40.40.0 openpyxl==3.1.5
+          python -m pip check
+      - name: Full offline test suite (live integration remains opt-in)
+        run: python -m pytest -q
+
+  container:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Build Linux amd64 pilot (no push)
+        run: docker build --platform linux/amd64 --tag chatbot-cloud:ci .
+      - name: Check image isolation and offline rendering
+        run: |
+          test "$(docker image inspect --format '{{.Config.User}}' chatbot-cloud:ci)" = '10001:10001'
+          docker run --rm -i --network none --entrypoint python chatbot-cloud:ci <<'PY'
+          from pathlib import Path
+          from chatbot.config import Settings
+          from chatbot.report_export import _chart_png
+          assert Settings.from_env().cloud_mode
+          assert not Settings.from_env().password
+          for path in ('.env', '.streamlit/secrets.toml', '.local', '.venv', '.git',
+                       'tests', 'generate_employee_dataset.py', 'load_to_mysql.py'):
+              assert not Path(path).exists(), path
+          assert _chart_png({'data': {'values': [{'x': 'pilot', 'y': 1}]},
+                             'mark': 'bar', 'encoding': {
+                                 'x': {'field': 'x', 'type': 'nominal'},
+                                 'y': {'field': 'y', 'type': 'quantitative'}}}).startswith(b'\x89PNG')
+          PY
+      - name: Missing native authentication must fail closed (no real OIDC)
+        run: |
+          docker run --rm -i --network none --entrypoint python chatbot-cloud:ci <<'PY'
+          import os
+          from streamlit.testing.v1 import AppTest
+          # Synthetic invite configuration only; no auth secrets or AI/DB keys.
+          os.environ['CHATBOT_OIDC_ISSUER'] = 'https://accounts.google.com'
+          os.environ['CHATBOT_CLOUD_ALLOWED_SUBJECTS'] = 'ci-not-a-real-google-sub'
+          app = AppTest.from_file('/app/chat_app.py', default_timeout=20).run()
+          assert not app.exception, list(app.exception)
+          assert any('Configure Streamlit native Google authentication secrets.' in e.value
+                     for e in app.error)
+          assert not app.chat_input
+          assert not app.text_input
+          assert not app.session_state.filtered_state.get('_cloud_database')
+          PY
+      - name: Smoke process-only Docker health with no network or credentials
+        run: |
+          docker run --detach --name chatbot-cloud-ci --network none chatbot-cloud:ci
+          for attempt in $(seq 1 30); do
+            health="$(docker inspect --format '{{.State.Health.Status}}' chatbot-cloud-ci)"
+            if [ "$health" = healthy ]; then exit 0; fi
+            if [ "$health" = unhealthy ]; then docker logs chatbot-cloud-ci; exit 1; fi
+            sleep 2
+          done
+          docker logs chatbot-cloud-ci
+          exit 1
+      - name: Clean up smoke container
+        if: always()
+        run: docker rm --force chatbot-cloud-ci || true

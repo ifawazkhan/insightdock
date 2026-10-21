@@ -1,0 +1,1 @@
+"""Local, table-scoped employee SQL chatbot."""

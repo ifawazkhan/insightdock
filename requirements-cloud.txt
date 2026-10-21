@@ -1,0 +1,18 @@
+# Curated application runtime, not pip freeze or the dataset/MCP toolchain.
+# Exact direct pins read with importlib.metadata in the configured Python 3.14.7
+# venv on 2026-10-21. Transitive dependencies are resolved, not hash-locked.
+streamlit==1.65.0
+pandas==3.0.6
+SQLAlchemy==2.1.1
+PyMySQL==1.2.3
+# Required for caching_sha2_password / sha256_password support.
+cryptography==50.0.1
+python-dotenv==1.2.3
+openai==2.54.0
+sqlglot==28.10.1
+reportlab==4.5.1
+vl-convert-python==1.9.0.post1
+Pillow==12.3.0
+# Native Streamlit OIDC requires Authlib >=1.3.2; installed before pinning.
+Authlib==1.9.1
+# pytest/Faker/openpyxl are CI-only, installed separately by cloud-checks.
