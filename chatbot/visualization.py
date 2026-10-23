@@ -80,7 +80,7 @@ def _legacy_visualization(result: QueryResult, question: str = "") -> Visualizat
     if sum(value is not None for value in values) < 2:
         return Visualization("table", "Matching records")
     measure_name = title(result.columns[measure])
-    note = "Chart shows fetched results only; additional rows were not fetched." if result.truncated else ""
+    note = f"Chart displays {len(result.rows):,} returned rows." if result.truncated else ""
     dates = []
     for i, name in enumerate(result.columns):
         if i == measure or not re.search(r"date|month|year|period", name, re.I):
@@ -383,7 +383,7 @@ class _Context:
 
     @property
     def note(self):
-        return "Chart shows fetched results only; additional rows were not fetched." if self.result.truncated else ""
+        return f"Chart displays {len(self.result.rows):,} returned rows." if self.result.truncated else ""
 
     def additive(self, index):
         if _RATE.search(self.result.columns[index]):

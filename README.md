@@ -21,7 +21,7 @@ on the native appearance menu, execute queries, clear chats or change the source
 
 ## Visual conversation interface
 
-Questions appear as compact, right-aligned messaging bubbles. Charts are shown **only when useful**. Person/contact lookups, single records and ordinary lists use record tables instead of incidental salary charts. The selector uses actual fetched values, SQL evidence and the question, excludes identifier/phone fields as measures, preserves query order and ties, and discloses truncation, missing values, or chart limits. Charts do not run additional queries or send additional data to AI.
+Questions appear as compact, right-aligned messaging bubbles. Charts are shown **only when useful**. Person/contact lookups, single records and ordinary lists use record tables instead of incidental salary charts. The selector uses actual fetched values, SQL evidence and the question, excludes identifier/phone fields as measures, and preserves query order and ties. Charts do not run additional queries or send additional data to AI.
 
 ### Analytical chart types
 
@@ -83,6 +83,10 @@ Azure credentials are supported directly: set `CHATBOT_AI_PROVIDER=azure`, `AZUR
 
 The app binds to localhost by default. It has **no authentication**, so do not expose it publicly, change the bind address, or put it behind a public proxy without adding authentication and authorization. Local OS users and processes may access a locally running server. Do not run this as a production service.
 
+### General conversation and weather
+
+Greetings receive a quick conversational reply. Other general-knowledge questions use a text-only model request without database schema or query results; this still requires the configured provider and question-sharing consent. Current weather questions use Open-Meteo geocoding and forecast services and send the requested city to that provider. These general paths do not generate SQL or query MySQL. Weather availability depends on network access; current answers include the provider's observation time.
+
 ## Using the chatbot
 
 - **Ask a question:** once the operator has configured consent and the provider/model, try “How many employees are there?” or “Average salary by department, excluding salaries less than or equal to zero.” Dirty department labels and invalid salaries are not silently normalized. There is no direct-SQL input mode.
@@ -100,7 +104,7 @@ Reports follow the **business question**, not a generic collection of query outp
 
 Pay profiles include all-record headcount, positive salary observation counts and average positive salary. Missing, zero and negative salaries are excluded from those averages and disclosed. Role sections appear only for actual supported role columns; missing role evidence and tied rankings are reported honestly. Complete count breakdowns can include **Percentage of returned total**, including missing categories; separate totals, selection limits and averages are not assumed to prove population shares. Saved headcounts alone cannot answer a pay comparison, so insufficient saved pay evidence falls back to read-only table analysis. Custom period/filter requests use consented planning rather than silently running a broad replacement.
 
-Reports contain at most six key findings and three relevant charts. Long internal query IDs, raw findings and SQL are removed from the main presentation. Methodology, provenance and detailed limitations are collapsed under report details; material partial-data/filter limitations remain briefly visible where necessary. Details retain timestamps, exact aggregate values and SQL provenance. Display numbers use commas and up to two decimals without changing the evidence. Client-facing report text is computed locally from verified aggregates; normal chat AI summary settings remain separate. Small groups are **not guaranteed anonymous**.
+Reports contain at most six key findings and three relevant charts. Long internal query IDs, raw findings and SQL are removed from the main presentation. Methodology, provenance and detailed notes are not included in the normal report view. Details retain timestamps, exact aggregate values and SQL provenance. Display numbers use commas and up to two decimals without changing the evidence. Client-facing report text is computed locally from verified aggregates; normal chat AI summary settings remain separate. Small groups are **not guaranteed anonymous**.
 
 Click **Download PDF** beneath the inline report—there is no preparation step. The cached compact A4 document includes title/question/date, striped aggregate tables, commentary, static charts, findings, relevant limitations and an author/page footer; recommendations/follow-up are included only when requested. Table headers repeat across pages. Neither export nor download reruns SQL. Raw individual records and SQL are omitted from the PDF. Export tables are capped at 50 rows and 12 columns per section with disclosure; a chart renderer failure falls back to an aggregate table. The bundled font supports Latin, Greek and Cyrillic; other scripts may need a custom font. PDFs are capped at 10 MiB and remain session-local until downloaded or deliberately emailed.
 

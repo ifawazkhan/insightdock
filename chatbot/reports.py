@@ -275,7 +275,7 @@ def build_report(title: str, evidence: tuple[ReportEvidence, ...], *, scope: Rep
                                         f"{ordered[0][0]} to {ordered[-1][0]}; this compares observed endpoints only.")
             if len(safe.rows) * len(safe.columns) > MAX_FINDINGS:
                 limitations.append(f"[{item.id}] Findings display is bounded; additional aggregate values remain in internal evidence.")
-        if item.result.truncated:
+        if item.result and item.result.truncated:
             limitations.append(f"[{item.id}] Query output was truncated; do not extrapolate totals from retained groups.")
         if re.search(r"\bLIMIT\b|\bWHERE\b|\bHAVING\b", item.sql, re.I):
             limitations.append(f"[{item.id}] Explicit SQL filters or selection limits apply; review internal provenance before population claims.")

@@ -55,6 +55,15 @@ class FakeUI:
         finally:
             self.panels.pop()
 
+    @contextmanager
+    def popover(self, label, **kwargs):
+        self.events.append(("popover", label, tuple(self.panels), kwargs))
+        self.panels.append(label)
+        try:
+            yield
+        finally:
+            self.panels.pop()
+
     def text_input(self, label, *, key, **kwargs):
         self.events.append(("input", label, tuple(self.panels), {"key": key, **kwargs}))
         return self.session_state.get(key, "")
@@ -222,7 +231,7 @@ def test_build_helper_is_pure_ui_free_and_preserves_snapshot_safety(flow):
     flow.runner.live.assert_called_once()
 
 
-def test_empty_optional_sections_hidden_limits_in_details_partial_in_summary(flow, monkeypatch):
+def test_report_interface_omits_partial_and_limitations_commentary(flow, monkeypatch):
     flow.chat["reports"] = [flow.report]
     document = replace(build_document(flow.report), recommendations=(), follow_up="",
                        summary="Partial report: some requested evidence is unavailable.",
@@ -231,26 +240,26 @@ def test_empty_optional_sections_hidden_limits_in_details_partial_in_summary(flo
     flow.render()
     headings = [e[1] for e in flow.screen.events if e[0] == "subheader"]
     assert not {"Recommendations", "Suggested follow-up", "Data limitations"} & set(headings)
-    limits = [e for e in flow.screen.events if e[0] == "text" and e[1] == "• Detailed limitation"]
-    assert len(limits) == 1 and limits[0][2] == ("Sources & details",)
-    assert any(e[0] == "text" and e[1] == document.summary and not e[2]
+    limits = [e for e in flow.screen.events if e[0] == "text" and "Detailed limitation" in e[1]]
+    assert not limits
+    assert any(e[0] == "text" and e[1] == "Here are the available results." and not e[2]
                for e in flow.screen.events)
 
 
-def test_email_panel_collapsed_saved_recipient_and_no_smtp_download(flow):
+def test_email_dropdown_saved_recipient_and_no_smtp_download(flow):
     flow.store.save("Local user", "saved@example.com")
     flow.chat["reports"] = [flow.report]
     flow.render()
-    panels = [e for e in flow.screen.events if e[0] == "expander" and e[1] == "Email report"]
-    assert len(panels) == 1 and panels[0][3] == {"expanded": False}
+    panels = [e for e in flow.screen.events if e[0] == "popover" and e[1] == "Send to email"]
+    assert len(panels) == 1
     key = f"report_recipient_profile_{flow.report.id}"
     assert flow.screen.session_state[key] == "saved@example.com"
     field = next(e for e in flow.screen.events if e[0] == "input")
-    assert field[2] == ("Email report",) and field[3]["on_change"] is ui._save_recipient
-    assert any(e[0] == "caption" and "SMTP" in e[1] and e[2] == ("Email report",)
+    assert field[2] == ("Send to email",) and field[3]["on_change"] is ui._save_recipient
+    assert any(e[0] == "warning" and "SMTP settings" in e[1] and e[2] == ("Send to email",)
                for e in flow.screen.events)
     assert any(e[0] == "download_button" for e in flow.screen.events)
-    assert next(e for e in flow.screen.events if e[0] == "button" and e[1] == "Send to email")[3]["disabled"]
+    assert next(e for e in flow.screen.events if e[0] == "button" and e[1] == "Send")[3]["disabled"]
     flow.screen.session_state[key] = "new@example.com"
     ui._save_recipient("Local user", key)
     assert flow.store.read("Local user") == "new@example.com"
@@ -287,11 +296,11 @@ def test_email_settings_follow_full_report_inside_each_container(flow, monkeypat
         title = next(i for i, e in enumerate(content) if e[:2] == ("subheader", report.title))
         findings = next(i for i, e in enumerate(content) if e[:2] == ("subheader", "Key findings"))
         sources = next(i for i, e in enumerate(content) if e[:2] == ("expander", "Sources & details"))
-        email = next(i for i, e in enumerate(content) if e[:2] == ("expander", "Email report"))
         download = next(i for i, e in enumerate(content) if e[0] == "download_button")
-        send = next(i for i, e in enumerate(content) if e[:2] == ("button", "Send to email"))
-        assert title < findings < sources < email < download < send
-        assert content[email][2:] == ((), {"expanded": False})
+        email = next(i for i, e in enumerate(content) if e[:2] == ("popover", "Send to email"))
+        send = next(i for i, e in enumerate(content) if e[:2] == ("button", "Send"))
+        assert title < findings < sources < download < email < send
+        assert content[email][2:] == ((), {"key": f"report_email_{report.id}", "width": "content"})
         field = next(e for e in content if e[0] == "input")
         key = f"report_recipient_profile_{report.id}"
         keys.append(field[3]["key"])
@@ -329,7 +338,7 @@ def test_explicit_send_consumed_before_io_and_never_replayed(flow, monkeypatch, 
     flow.render()
     flow.sender.assert_not_called()
     for _ in range(3):
-        flow.screen.clicks.add(f"report_email_{flow.report.id}")
+        flow.screen.clicks.add(f"report_email_send_{flow.report.id}")
         flow.render()
     flow.sender.assert_called_once_with(PDF, flow.report.title, "new@example.com", settings)
     assert flow.chat["report_email_attempts"][attempt] == outcome
@@ -343,7 +352,7 @@ def test_failed_send_is_not_retried_on_rerender(flow, monkeypatch):
         host="smtp.example.test", from_address="sender@example.test")))
     flow.screen.session_state[f"report_recipient_profile_{flow.report.id}"] = "new@example.com"
     flow.sender.side_effect = EmailError("Sending failed")
-    flow.screen.clicks.add(f"report_email_{flow.report.id}")
+    flow.screen.clicks.add(f"report_email_send_{flow.report.id}")
     flow.render()
     flow.render()
     flow.sender.assert_called_once()

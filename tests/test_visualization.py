@@ -62,7 +62,7 @@ def test_single_record_is_not_a_salary_chart():
 def test_limits_nulls_and_no_fabricated_values():
     visual = choose_visualization(result(["department", "salary"], [[f"Dept {i}", i] for i in range(40)] + [["Missing", None]], True))
     assert len(visual.spec["data"]["values"]) == 30
-    assert "first 30" in visual.note and "Missing" in visual.note and "additional rows" in visual.note
+    assert "first 30" in visual.note and "Missing" in visual.note and "Chart displays 41 returned rows." in visual.note
 
 
 @pytest.mark.parametrize("columns,rows,kind", [
@@ -229,7 +229,7 @@ def test_numeric_scatter_bounds_and_aggregate_rejection():
     data = result(["salary", "rating"], [[i, i / 100] for i in range(510)], True)
     chart = choose_visualization(data, "Scatter salary versus rating")
     assert len(chart.spec["data"]["values"]) == 500
-    assert "500" in chart.note and "additional rows" in chart.note
+    assert "500" in chart.note and "additional rows" not in chart.note
     sql = "SELECT AVG(salary) AS salary, AVG(rating) AS rating FROM employees GROUP BY department"
     assert "scatter" not in compatible_visualizations(data, "Compare salary versus rating", sql=sql)
 

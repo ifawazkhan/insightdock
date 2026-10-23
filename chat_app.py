@@ -23,6 +23,7 @@ from chatbot.sql_policy import PolicyError
 from chatbot.speech import speech_controls_html
 from chatbot.client_theme import theme_css, themed_spec, client_table
 from chatbot.report_presentation import display_number, human_label
+from chatbot.weather import WeatherUnavailable, current_temperature, requested_city
 from chatbot.cloud_access import CloudAccessError
 from chatbot.cloud_ui import prepare_cloud_session, render_cloud_account
 
@@ -118,10 +119,6 @@ def render_result(result: QueryResult, key: str, question: str = "", *, sql: str
             table()
     elif result.columns and result.rows:
         table()
-    if visual.note:
-        st.caption(visual.note)
-    if result.truncated:
-        st.warning("These results are incomplete. Refine your question to see a smaller selection.")
 
 
 def save_chat() -> None:
@@ -217,6 +214,42 @@ def _has_requested_department_rank(sql: str, question: str) -> bool:
                     and int(right.this) == expected):
                     return True
     return False
+
+
+_GENERAL_GREETING = re.compile(
+    r"^(?:(?:hi|hello|hey|hiya|howdy|good\s+(?:morning|afternoon|evening)|what's up|whats up)"
+    r"[\s!.?,]*)+$", re.I)
+_LIVE_WEATHER = re.compile(r"\b(?:weather|temperature|temp|forecast)\b", re.I)
+_NON_DATABASE_SMALLTALK = re.compile(r"\b(?:explain|what is|what are|who is|who was|how does|how do|why does|why do)\b", re.I)
+_DATABASE_LANGUAGE = re.compile(
+    r"\b(?:database|schema|table|column|row|record|employee|employees|department|salary|salaries|"
+    r"pay|earner|earnings|hire|hiring|join date|status|rating|city|email|phone|count|average|avg|"
+    r"sum|total|highest|lowest|top\s+\d+|bottom\s+\d+|group by|sql|query|select|insert|update|"
+    r"delete|create|drop|alter|change|modify|report|workforce|headcount)\b", re.I)
+
+
+def _general_response_kind(question: str, schema: Schema) -> str | None:
+    """Classify clear small talk/general prompts without letting them reach SQL generation."""
+    cleaned = question.strip()
+    if _GENERAL_GREETING.fullmatch(cleaned):
+        return "greeting"
+    if _LIVE_WEATHER.search(cleaned):
+        if _DATABASE_LANGUAGE.search(cleaned):
+            return None
+        return "weather"
+    if (_NON_DATABASE_SMALLTALK.search(cleaned) and _DATABASE_LANGUAGE.search(cleaned)
+            and not re.search(r"\b(?:what is|what are|who is|who was|explain)\s+(?:the\s+)?(?:database|schema|table|column|employee|department|salary|pay)\b", cleaned, re.I)):
+        return "general"
+    if _DATABASE_LANGUAGE.search(cleaned):
+        return None
+    schema_terms = [schema.table, *(column["name"] for column in schema.columns)]
+    if schema.tables:
+        schema_terms.extend(table["name"] for table in schema.tables)
+        schema_terms.extend(column["name"] for table in schema.tables for column in table.get("columns", ()))
+    if any(re.search(rf"(?<!\w){re.escape(term)}(?!\w)", cleaned, re.I)
+           for term in schema_terms if term):
+        return None
+    return "general"
 
 
 def new_chat(service: ChatService) -> None:
@@ -573,9 +606,10 @@ def render_chat(service: ChatService) -> None:
                 st.session_state.pop("pending_prompt", None)
                 st.rerun()
 
-    prompt = st.chat_input("Ask me anything about this table…" if service.scope_table else "Ask me anything about this schema…", disabled=disabled)
+    prompt = st.chat_input("Ask me anything about this table…" if service.scope_table else "Ask me anything about this schema…")
     prompt = prompt or st.session_state.pop("edited_prompt", None)
-    if prompt and disabled:
+    prompt_response_kind = _general_response_kind(prompt, schema) if prompt else None
+    if prompt and disabled and prompt_response_kind not in {"greeting", "weather"}:
         st.warning("Complete chat setup before resending your question.")
         prompt = None
     if prompt and is_report_request(prompt):
@@ -598,6 +632,36 @@ def render_chat(service: ChatService) -> None:
 
     prompt = st.session_state.pop("queued_chat_prompt", None)
     if prompt:
+        response_kind = _general_response_kind(prompt, schema)
+        if response_kind:
+            if response_kind == "greeting":
+                answer = "Hi! I can chat or help you explore your MySQL data. What would you like to know?"
+            elif response_kind == "weather":
+                city = requested_city(prompt)
+                if not city:
+                    answer = "Which city would you like the current weather for?"
+                else:
+                    try:
+                        answer = current_temperature(city)
+                    except WeatherUnavailable:
+                        answer = f"I couldn't get the current temperature for {city}. Please try again shortly."
+            else:
+                if disabled:
+                    answer = "General knowledge answers require a configured AI model and explicit question-sharing consent. Greetings and current-weather lookups are still available."
+                else:
+                    try:
+                        with st.spinner("Thinking…"):
+                            answer = ChatModel(settings).answer_general(prompt)
+                            ensure_cloud_state(service)
+                    except (ModelError, CloudAccessError) as exc:
+                        if isinstance(exc, CloudAccessError):
+                            handle_cloud_denial(service, exc)
+                        ensure_cloud_state(service, error=str(exc))
+                        answer = str(exc)
+            st.session_state.messages.append({"role": "assistant", "text": answer})
+            st.session_state.messages = st.session_state.messages[-20:]
+            save_chat()
+            st.rerun()
         try:
             with st.spinner("Thinking…"):
                 context = [m["text"] for m in st.session_state.messages[:-1] if m["role"] == "user"]

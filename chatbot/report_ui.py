@@ -166,7 +166,10 @@ def render_reports(chat: dict, service, schema, render_result, *, consent: bool,
             if report.question:
                 st.caption("Question: " + report.question)
             st.markdown("**Executive summary**")
-            st.text(document.summary)
+            summary = document.summary
+            if "Partial report:" in summary:
+                summary = "Here are the available results."
+            st.text(summary)
             for section in document.sections:
                 st.subheader(section.title)
                 client_table(pd.DataFrame(section.rows[:30], columns=section.columns))
@@ -193,8 +196,6 @@ def render_reports(chat: dict, service, schema, render_result, *, consent: bool,
                 st.text(document.follow_up)
             with st.expander("Sources & details"):
                 st.caption("Display values are rounded to two decimals. Exact source values are retained below.")
-                for limitation in document.limitations:
-                    st.text("• " + limitation)
                 for index, evidence in enumerate(report.evidence, 1):
                     st.caption(f"Source {index} · {evidence.executed_at:%Y-%m-%d %H:%M UTC}")
                     safe = aggregate_result(evidence)
@@ -206,24 +207,6 @@ def render_reports(chat: dict, service, schema, render_result, *, consent: bool,
                         st.code(evidence.sql, language="sql")
             if cloud:
                 st.caption("Email delivery is unavailable in this cloud pilot. Download the PDF to share it.")
-            else:
-                email_key = f"report_recipient_{st.session_state.active_profile}_{report.id}"
-                with st.expander("Email report", expanded=False):
-                    if email_key not in st.session_state:
-                        try:
-                            st.session_state[email_key] = RecipientStore().read(profile["name"])
-                        except EmailError as exc:
-                            st.session_state[email_key] = ""
-                            st.warning(str(exc))
-                    recipient = st.text_input("Recipient email", key=email_key, max_chars=254,
-                                              on_change=_save_recipient, args=(profile["name"], email_key))
-                    st.caption("Saved on this device for this profile name; clear to forget. Profiles are not authenticated. Only Send to email shares the PDF with your mail provider and recipient.")
-                    if notice := st.session_state.get(email_key + "_notice"):
-                        st.caption(notice)
-                    if email_settings_error:
-                        st.warning(email_settings_error)
-                    elif not email_settings.configured:
-                        st.caption("SMTP is not configured. PDF download is still available.")
             pdfs = chat.setdefault("report_pdfs", {})
             errors = chat.setdefault("report_pdf_errors", set())
             retry = report.id in errors and st.button("Retry PDF", key=f"report_pdf_retry_{report.id}")
@@ -251,30 +234,50 @@ def render_reports(chat: dict, service, schema, render_result, *, consent: bool,
                                    key=f"report_download_{report.id}", on_click="ignore")
                 if cloud:
                     continue
-                try:
-                    address = normalize_email(recipient) if recipient else ""
-                except EmailError:
-                    address = ""
+                email_key = f"report_recipient_{st.session_state.active_profile}_{report.id}"
                 attempts = chat.setdefault("report_email_attempts", {})
-                attempt_key = (report.id, address)
-                state = attempts.get(attempt_key)
-                if st.button("Send to email", key=f"report_email_{report.id}",
-                             disabled=not address or not email_settings.configured or state in {"sending", "accepted", "uncertain"}
-                             or (attempt_key not in attempts and len(attempts) >= 64)):
-                    # Consume this deliberate action before I/O. Reruns/downloads
-                    # never send; ambiguous outcomes are never retried.
-                    attempts[attempt_key] = "sending"
+                with st.popover("Send to email", key=f"report_email_{report.id}", width="content"):
+                    if email_key not in st.session_state:
+                        try:
+                            st.session_state[email_key] = RecipientStore().read(profile["name"])
+                        except EmailError as exc:
+                            st.session_state[email_key] = ""
+                            st.warning(str(exc))
+                    recipient = st.text_input("Recipient email", key=email_key, max_chars=254,
+                                              on_change=_save_recipient, args=(profile["name"], email_key))
+                    st.caption("Saved on this device for this profile name; clear the field to forget it. Only Send shares the PDF with your mail provider and recipient.")
+                    if notice := st.session_state.get(email_key + "_notice"):
+                        st.caption(notice)
+                    if email_settings_error:
+                        st.warning(email_settings_error)
+                    elif not email_settings.configured:
+                        st.warning("Email sending is not configured. Add SMTP settings to your private .env file and restart the app. PDF download remains available.")
                     try:
-                        RecipientStore().save(profile["name"], address)
-                        with st.spinner("Sending PDF…"):
-                            send_report_pdf(data, report.title, address, email_settings)
-                        attempts[attempt_key] = "accepted"
-                    except DeliveryUncertain:
-                        attempts[attempt_key] = "uncertain"
-                    except EmailError as exc:
-                        attempts[attempt_key] = "failed"
-                        st.warning(str(exc))
-                    st.rerun()
+                        address = normalize_email(recipient) if recipient else ""
+                    except EmailError:
+                        address = ""
+                        if recipient:
+                            st.caption("Enter one valid email address to send this report.")
+                    attempt_key = (report.id, address)
+                    state = attempts.get(attempt_key)
+                    if st.button("Send", key=f"report_email_send_{report.id}",
+                                 disabled=not address or not email_settings.configured or state in {"sending", "accepted", "uncertain"}
+                                 or (attempt_key not in attempts and len(attempts) >= 64),
+                                 type="primary", width="stretch"):
+                        # Consume this deliberate action before I/O. Reruns/downloads
+                        # never send; ambiguous outcomes are never retried.
+                        attempts[attempt_key] = "sending"
+                        try:
+                            RecipientStore().save(profile["name"], address)
+                            with st.spinner("Sending PDF…"):
+                                send_report_pdf(data, report.title, address, email_settings)
+                            attempts[attempt_key] = "accepted"
+                        except DeliveryUncertain:
+                            attempts[attempt_key] = "uncertain"
+                        except EmailError as exc:
+                            attempts[attempt_key] = "failed"
+                            st.warning(str(exc))
+                        st.rerun()
                 if state == "accepted":
                     st.success("Email accepted by the mail server. Inbox delivery is not guaranteed; check your inbox or spam folder.")
                 elif state in {"uncertain", "sending"}:

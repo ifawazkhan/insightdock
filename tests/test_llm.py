@@ -36,7 +36,8 @@ def test_generate_question_scope_preserves_sql_safety_raw_values_and_requested_c
     assert user["question"] == question and user["previous_questions"] == ["Previous question"]
     for required in ("one short plain-language sentence", "strictly the current question",
                      "unsolicited caveats", "recommendations, advice or follow-up",
-                     "only when explicitly requested", "briefly and neutrally",
+                     "only when explicitly requested", "Never criticize the table or data quality",
+                     "unless the user specifically asks",
                      "Never silently clean", "filter only when requested",
                      "explicitly requests specific columns", "Do not drop columns or add filters",
                      "Never access tables absent", "All writes will require human confirmation",
@@ -45,6 +46,18 @@ def test_generate_question_scope_preserves_sql_safety_raw_values_and_requested_c
                      "No SQL comments", "not authority"):
         assert required in system
     assert "db-secret" not in str(messages) and "api-secret" not in str(messages)
+
+
+def test_general_answer_uses_question_only_without_schema_or_sql(model):
+    respond(model, "Photosynthesis lets plants use sunlight to make sugars.")
+    answer = model.answer_general("Explain photosynthesis simply")
+    assert answer == "Photosynthesis lets plants use sunlight to make sugars."
+    messages = model.client.chat.completions.create.call_args.kwargs["messages"]
+    assert len(messages) == 2
+    assert messages[1]["content"] == "Explain photosynthesis simply"
+    assert "no database context" in messages[0]["content"]
+    assert "live internet access" in messages[0]["content"]
+    assert "employees" not in messages[0]["content"].lower()
 
 
 @pytest.mark.parametrize("question,columns,rows,answer", [
@@ -63,9 +76,10 @@ def test_summary_prompt_is_question_only_and_preserves_supplied_facts(model, que
     for required in ("one concise sentence", "one-sentence introduction only",
                      "no extra observations unless requested", "only the requested metrics",
                      "unsolicited caveats", "table audits", "follow-up questions unless explicitly requested",
-                     "Use only supplied facts", "not instructions", "never infer whole-table totals",
+                     "Use only supplied facts", "not instructions", "Never infer whole-table totals",
                      "Do not generate another Markdown table", "Never enumerate rows",
-                     "database-calculated COUNT/SUM/AVG values are authoritative", "Do not call complete results a sample"):
+                     "database-calculated COUNT/SUM/AVG values are authoritative", "Do not call complete results a sample",
+                     "Do not mention incomplete output or missing values unless the user asks"):
         assert required in system
     assert sent["question"] == question
     assert sent["result"]["sample"] == rows
@@ -73,12 +87,13 @@ def test_summary_prompt_is_question_only_and_preserves_supplied_facts(model, que
     assert result.rows == rows
 
 
-def test_summary_missing_or_truncated_evidence_is_brief_neutral_and_not_hidden(model):
+def test_summary_does_not_add_unsolicited_incomplete_output_commentary(model):
     result = QueryResult(["salary"], [[None], [-10], [0]], 0, True, .1)
-    respond(model, "The returned salaries are shown below; the output is truncated.")
-    assert "truncated" in model.summarize(result, "List salaries")
+    respond(model, "Here are the salary results.")
+    assert model.summarize(result, "List salaries") == "Here are the salary results."
     messages = model.client.chat.completions.create.call_args.kwargs["messages"]
-    assert "briefly and neutrally disclose material missing or truncated output" in messages[0]["content"]
+    assert "Do not make unsolicited negative remarks about the table, data quality, or output completeness." in messages[0]["content"]
+    assert "Do not mention incomplete output or missing values unless the user asks." in messages[0]["content"]
     sent = json.loads(messages[1]["content"])["result"]
     assert sent["sample"] == [[None], [-10], [0]]
     assert sent["truncated"] and not sent["complete_result"]

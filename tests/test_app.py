@@ -32,6 +32,7 @@ def fake_model(monkeypatch):
 
     model.generate.side_effect = generate
     model.summarize.return_value = "There are 895 employees."
+    model.answer_general.return_value = "Photosynthesis is how plants use sunlight to make sugars from water and carbon dioxide."
     model.plan_report.side_effect = AssertionError("Unexpected model report planning")
     monkeypatch.setattr("chatbot.llm.ChatModel", lambda _: model)
     monkeypatch.setattr("chatbot.report_ui.ChatModel", lambda _: model)
@@ -139,6 +140,65 @@ def test_natural_chat_uses_model_without_direct_sql_controls(app, fake_model):
     assert not at.get("download_button")
 
 
+@pytest.mark.parametrize("question", ["hey", "hey hello", "good morning"])
+def test_greetings_get_a_natural_reply_without_sql_or_model(app, fake_model, question):
+    at, db = app
+    submit_prompt(at, question)
+    assert not at.exception
+    assert fake_model.generate.call_count == 0
+    fake_model.answer_general.assert_not_called()
+    fake_model.summarize.assert_not_called()
+    db.execute.assert_not_called()
+    assert any("Hi! I can chat" in element.value for element in at.markdown)
+
+
+def test_live_weather_request_is_honest_and_does_not_generate_sql(app, fake_model):
+    at, db = app
+    responses = [
+        {"results": [{"name": "Hyderabad", "admin1": "Telangana", "country": "India",
+                      "latitude": 17.385, "longitude": 78.4867}]},
+        {"current": {"temperature_2m": 29, "time": "12:15"},
+         "current_units": {"temperature_2m": "°C"}},
+    ]
+    with patch("chatbot.weather._get_json", side_effect=responses) as weather:
+        submit_prompt(at, "what is the temperature in Hyderabad")
+    assert not at.exception
+    assert fake_model.generate.call_count == 0
+    fake_model.answer_general.assert_not_called()
+    db.execute.assert_not_called()
+    assert weather.call_count == 2
+    assert any("current temperature in Hyderabad" in element.value for element in at.markdown)
+
+
+def test_regular_truncated_result_has_no_incomplete_output_warning(app):
+    at, db = app
+    db.execute.return_value = QueryResult(["employee_count"], [[895]], 0, True, .01)
+    submit_prompt(at, "How many employees are there?")
+    visible = " ".join(element.value for element in at.markdown)
+    assert not at.warning
+    assert "incomplete" not in visible.lower() and "truncated" not in visible.lower()
+
+
+def test_weather_prompt_without_city_asks_a_clarifying_question(app, fake_model):
+    at, db = app
+    submit_prompt(at, "what is the weather")
+    assert not at.exception
+    fake_model.generate.assert_not_called()
+    fake_model.answer_general.assert_not_called()
+    db.execute.assert_not_called()
+    assert any("Which city" in element.value for element in at.markdown)
+
+
+def test_general_knowledge_uses_text_only_model_without_database_query(app, fake_model):
+    at, db = app
+    submit_prompt(at, "Explain photosynthesis in simple terms")
+    assert not at.exception
+    fake_model.generate.assert_not_called()
+    fake_model.answer_general.assert_called_once_with("Explain photosynthesis in simple terms")
+    db.execute.assert_not_called()
+    assert any("plants use sunlight" in element.value for element in at.markdown)
+
+
 def test_report_is_explicit_and_snapshot_never_requeries(app, monkeypatch):
     at, db = app
     from chatbot.report_export import report_pdf
@@ -235,7 +295,7 @@ def test_reports_stay_at_request_turns_with_distinct_email_widgets(
     assert [at.text_input(key=key).value for key in keys] == ["saved@example.test"] * 2
     at.text_input(key=keys[0]).set_value("analyst@example.test").run()
     assert recipient_store.read(profile_name) == "analyst@example.test"
-    at.button(key=f"report_email_{reports[0].id}").click().run()
+    at.button(key=f"report_email_send_{reports[0].id}").click().run()
     query_count = db.execute.call_count
     for dark in (True, False):
         at.toggle(key="dark_mode").set_value(dark).run()
@@ -389,13 +449,22 @@ def recipient_input(at):
     return next(t for t in at.text_input if t.label == "Recipient email")
 
 
+def open_email_dropdown(at, report_id):
+    # AppTest exposes popover children even while the browser popover is closed.
+    key = f"report_recipient_{at.session_state['active_profile']}_{report_id}"
+    assert any(field.key == key for field in at.text_input)
+
+
 def test_report_recipient_autosaves_and_restores_across_same_profile_chats(app, recipient_store, email_delivery):
     at, db = app
     profile_name = at.session_state["profiles"]["owner"]["name"]
     recipient_store.save(profile_name, "previous@example.test")
     original = at.session_state["active_chat"]
     build_snapshot_report(at)
-    assert any(e.label == "Email report" for e in at.expander)
+    original_report_id = at.session_state["chats"][original]["reports"][0].id
+    report_id = original_report_id
+    assert any(b.label == "Send" and b.key == f"report_email_send_{report_id}" for b in at.button)
+    open_email_dropdown(at, report_id)
     assert recipient_input(at).value == "previous@example.test"
     recipient_input(at).set_value("Analyst@EXAMPLE.TEST").run()
     assert not at.exception
@@ -405,9 +474,12 @@ def test_report_recipient_autosaves_and_restores_across_same_profile_chats(app, 
     # The widget is absent on this run; the next chat must reload the store.
     assert not any(t.label == "Recipient email" for t in at.text_input)
     build_snapshot_report(at)
+    report_id = at.session_state["chats"][at.session_state["active_chat"]]["reports"][0].id
+    open_email_dropdown(at, report_id)
     assert recipient_input(at).value == "Analyst@example.test"
     at.button(key=f"history_{original}").click().run()
     assert at.session_state["active_chat"] == original
+    open_email_dropdown(at, original_report_id)
     assert recipient_input(at).value == "Analyst@example.test"
     assert db.execute.call_count == 2
     email_delivery.assert_not_called()
@@ -416,13 +488,15 @@ def test_report_recipient_autosaves_and_restores_across_same_profile_chats(app, 
 def test_report_recipient_clear_forgets_saved_address(app, recipient_store, email_delivery):
     at, _ = app
     build_snapshot_report(at)
+    report_id = at.session_state["chats"][at.session_state["active_chat"]]["reports"][0].id
+    open_email_dropdown(at, report_id)
     profile_name = at.session_state["profiles"]["owner"]["name"]
     recipient_input(at).set_value("forget@example.test").run()
     assert recipient_store.read(profile_name) == "forget@example.test"
     recipient_input(at).set_value("").run()
     assert not at.exception
     assert recipient_store.read(profile_name) == ""
-    assert button(at, "Send to email").disabled
+    assert at.button(key=f"report_email_send_{report_id}").disabled
     button(at, "New chat").click().run()
     build_snapshot_report(at)
     assert recipient_input(at).value == ""
@@ -433,18 +507,26 @@ def test_report_recipient_is_isolated_by_profile(app, recipient_store, email_del
     at, db = app
     build_snapshot_report(at)
     owner_name = at.session_state["profiles"]["owner"]["name"]
+    report_id = at.session_state["chats"][at.session_state["active_chat"]]["reports"][0].id
+    open_email_dropdown(at, report_id)
     recipient_input(at).set_value("owner@example.test").run()
     add_user(at, "Report guest")
     guest = at.session_state["active_profile"]
     build_snapshot_report(at)
+    report_id = at.session_state["chats"][at.session_state["active_chat"]]["reports"][0].id
+    open_email_dropdown(at, report_id)
     assert recipient_input(at).value == ""
     recipient_input(at).set_value("guest@example.test").run()
     assert recipient_store.read(owner_name) == "owner@example.test"
     assert recipient_store.read("Report guest") == "guest@example.test"
     next(s for s in at.selectbox if s.label == "User").set_value("owner").run()
+    report_id = at.session_state["chats"][at.session_state["active_chat"]]["reports"][0].id
+    open_email_dropdown(at, report_id)
     assert recipient_input(at).value == "owner@example.test"
     next(s for s in at.selectbox if s.label == "User").set_value(guest).run()
     assert not at.exception
+    report_id = at.session_state["chats"][at.session_state["active_chat"]]["reports"][0].id
+    open_email_dropdown(at, report_id)
     assert recipient_input(at).value == "guest@example.test"
     assert db.execute.call_count == 2
     email_delivery.assert_not_called()
@@ -465,19 +547,20 @@ def test_report_email_deliberate_cached_send_never_repeats(
     report = chat["reports"][0]
     pdf = chat["report_pdfs"][report.id]
     assert pdf.startswith(b"%PDF")
+    open_email_dropdown(at, report.id)
     assert recipient_input(at).value == "saved@example.test"
-    assert not button(at, "Send to email").disabled
+    assert not at.button(key=f"report_email_send_{report.id}").disabled
     for _ in range(2):
         at.run()
         at.download_button[0].click().run()
     email_delivery.assert_not_called()
-    button(at, "Send to email").click().run()
+    at.button(key=f"report_email_send_{report.id}").click().run()
     assert not at.exception
     email_delivery.assert_called_once_with(pdf, report.title, "saved@example.test", configured_email)
     assert email_delivery.call_args.args[0] is pdf
     assert chat["report_email_attempts"][(report.id, "saved@example.test")] == outcome
     assert recipient_store.read(profile_name) == "saved@example.test"
-    assert button(at, "Send to email").disabled
+    assert at.button(key=f"report_email_send_{report.id}").disabled
     if outcome == "accepted":
         assert any("accepted by the mail server" in s.value and
                    "Inbox delivery is not guaranteed" in s.value for s in at.success)
@@ -488,7 +571,8 @@ def test_report_email_deliberate_cached_send_never_repeats(
         at.run()
         at.download_button[0].click().run()
         assert not at.exception
-        assert button(at, "Send to email").disabled
+        open_email_dropdown(at, report.id)
+        assert at.button(key=f"report_email_send_{report.id}").disabled
         assert chat["report_pdfs"][report.id] is pdf
     email_delivery.assert_called_once()
     export.assert_called_once_with(report)
@@ -500,9 +584,11 @@ def test_report_invalid_recipient_disables_email_not_download(
         app, recipient_store, email_delivery, configured_email, address):
     at, db = app
     build_snapshot_report(at)
+    report_id = at.session_state["chats"][at.session_state["active_chat"]]["reports"][0].id
+    open_email_dropdown(at, report_id)
     recipient_input(at).set_value(address).run()
     assert not at.exception
-    assert button(at, "Send to email").disabled
+    assert at.button(key=f"report_email_send_{report_id}").disabled
     assert recipient_store.read(at.session_state["profiles"]["owner"]["name"]) == ""
     assert not at.download_button[0].disabled
     at.download_button[0].click().run()
@@ -514,10 +600,12 @@ def test_report_invalid_recipient_disables_email_not_download(
 def test_report_missing_smtp_keeps_download_available(app, recipient_store, email_delivery):
     at, db = app
     build_snapshot_report(at)
+    report_id = at.session_state["chats"][at.session_state["active_chat"]]["reports"][0].id
+    open_email_dropdown(at, report_id)
     recipient_input(at).set_value("recipient@example.test").run()
     assert recipient_store.read(at.session_state["profiles"]["owner"]["name"]) == "recipient@example.test"
-    assert any("SMTP is not configured" in c.value for c in at.caption)
-    assert button(at, "Send to email").disabled
+    assert any("SMTP settings" in w.value for w in at.warning)
+    assert at.button(key=f"report_email_send_{report_id}").disabled
     assert not at.download_button[0].disabled
     at.download_button[0].click().run()
     at.run()
@@ -569,10 +657,14 @@ def test_natural_chat_requires_model_and_consent(app, app_settings, monkeypatch,
     monkeypatch.setattr(Settings, "from_env", classmethod(lambda cls: settings))
     at.run()
     assert not at.exception
-    assert at.chat_input[0].disabled
+    assert not at.chat_input[0].disabled
     assert any("Chat setup is incomplete" in i.value for i in at.info)
     assert not at.radio
     fake_model.generate.assert_not_called()
+    submit_prompt(at, "hey")
+    assert not at.exception
+    fake_model.generate.assert_not_called()
+    assert any("Hi! I can chat" in element.value for element in at.markdown)
 
 
 def test_missing_configuration(monkeypatch):
@@ -1001,8 +1093,9 @@ def test_question_led_pay_report_tables_live_fallback_and_snapshot_reuse(pay_app
     visible = " ".join(t.value for t in at.text)
     assert "Engineering has the highest average salary (300)" in visible
     assert "Sales has the lowest (200)" in visible
-    assert "Salary averages exclude missing and nonpositive salaries" in visible
-    assert "No job-title or role evidence is available" in visible
+    assert "Salary averages exclude missing and nonpositive salaries" not in visible
+    assert "No job-title or role evidence is available" not in visible
+    assert "Partial report" not in visible and "truncated" not in visible.lower()
     assert build_document(report).findings[0].startswith("Among returned groups, Engineering")
     # The primary report chart's Details table is the average-only projection.
     primary_chart = next(s for s in build_document(report).sections if s.title == "Department Salary Profile")
